@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#8b6f47">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>들썩들썩</title>
+<style>
+  :root {
+    --bounce-duration: 0.7s;
+    --base-amount: 8%;             /* 사용자가 슬라이더로 정하는 점프 높이 */
+    --bounce-amount: var(--base-amount);  /* 키프레임이 읽는 진폭 — overlay에서만 더 크게 오버라이드 */
+    --squash: 0.06;
+    --zoom: 1;
+    --pan-x: 0px;
+    --pan-y: 0px;
+    --feather: 18%;
+    --heartbeat: 0;                /* 두근 펄스 강도 (0 = 끄기, 0.1 = 최대) */
+    --heartbeat-duration: 0.7s;    /* 두근 속도 (한 번의 쿵에 걸리는 시간) */
+    --frame-size: 380px;           /* 액자 한 변 길이 */
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    background:
+      radial-gradient(ellipse at top, #fff5e6 0%, transparent 60%),
+      linear-gradient(135deg, #fbe9d7 0%, #c8e6c9 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px 40px;
+    gap: 20px;
+    overflow-x: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 터치 입력에서 제스처 지연 / 의도치 않은 줌 방지 */
+  button, input { touch-action: manipulation; }
+
+  .header { text-align: center; }
+  h1 {
+    font-size: clamp(1.8rem, 5vw, 2.8rem);
+    color: #4a3520;
+    letter-spacing: 0.1em;
+    text-shadow: 2px 2px 0 rgba(255,255,255,0.6);
+  }
+  .subtitle {
+    color: #6b5840;
+    font-size: 0.9rem;
+    margin-top: 4px;
+  }
+
+  /* ---------- 액자 (절대 안 움직임) ---------- */
+  .frame {
+    background: #fff;
+    padding: 18px 18px 56px;
+    border-radius: 4px;
+    box-shadow:
+      0 1px 2px rgba(0,0,0,0.08),
+      0 12px 28px rgba(60,40,20,0.25),
+      inset 0 0 0 1px rgba(0,0,0,0.04);
+    position: relative;
+    width: fit-content;
+    margin-top: 12px;
+  }
+
+  .frame::before {
+    content: "";
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    width: 84px;
+    height: 20px;
+    background: rgba(212, 175, 55, 0.4);
+    border: 1px solid rgba(150, 110, 30, 0.25);
+    transform: translateX(-50%) rotate(-2deg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+  }
+
+  .caption {
+    position: absolute;
+    bottom: 14px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: #5d4a2d;
+    font-size: 1.1rem;
+    font-style: italic;
+    pointer-events: none;
+  }
+
+  /* ---------- 창 (이미지가 보이는 구멍) ---------- */
+  .window {
+    display: block;
+    position: relative;
+    width:  var(--frame-size);
+    height: var(--frame-size);
+    overflow: hidden;
+    background: #faf6ee;
+    border-radius: 2px;
+    cursor: pointer;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06);
+  }
+
+  /* 사진은 창에 꽉 맞게(잘리지 않게) — letterbox 영역은 창 배경색이 채움 */
+  .bouncing-image {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transform-origin: center bottom;
+    will-change: transform;
+    animation: hop var(--bounce-duration) cubic-bezier(.5,.05,.5,.95) infinite;
+    display: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .bouncing-image.active { display: block; }
+  .window.has-image .placeholder { display: none; }
+  .window.paused .bouncing-image { animation-play-state: paused; }
+
+  /* 확대/축소 — 애니메이션과 합성되도록 이미지 둘을 감싸는 래퍼 */
+  .zoom-wrap {
+    position: absolute;
+    inset: 0;
+    transform: translate(var(--pan-x), var(--pan-y)) scale(var(--zoom));
+    transform-origin: center center;
+    pointer-events: none;
+    will-change: transform;
+  }
+
+  /* 흔들 1·2 / 잔잔 동심 레이어 + 확대 영역 단일 레이어 — 부드러운 사각 마스크 공유 */
+  .bouncing-image.overlay-layer,
+  .bouncing-image.overlay-layer-2,
+  .bouncing-image.overlay-calm-layer,
+  .bouncing-image.overlay-zoom-layer {
+    pointer-events: none;
+    -webkit-mask-image:
+      linear-gradient(to right,  transparent 0, black var(--feather), black calc(100% - var(--feather)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, black var(--feather), black calc(100% - var(--feather)), transparent 100%);
+    -webkit-mask-composite: source-in;
+    -webkit-mask-repeat: no-repeat;
+    mask-image:
+      linear-gradient(to right,  transparent 0, black var(--feather), black calc(100% - var(--feather)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, black var(--feather), black calc(100% - var(--feather)), transparent 100%);
+    mask-composite: intersect;
+    mask-repeat: no-repeat;
+  }
+  /* 진폭 그라디언트는 t² 곡선으로 안쪽으로 갈수록 가속 (t=0 바깥, t=1 안쪽) */
+  /* 흔들 1, 2 — 같은 진폭 공식, base와 같은 duration으로 사진과 위상 동기 */
+  .bouncing-image.overlay-layer,
+  .bouncing-image.overlay-layer-2 {
+    --bounce-amount: calc(var(--base-amount) *
+      (1 + var(--factor, 0.6) * (0.05 + 0.18 * var(--layer-t, 0) * var(--layer-t, 0))));
+  }
+  .bouncing-image.overlay-calm-layer {
+    --bounce-amount: calc(var(--base-amount) *
+      (1 - (1 - var(--calm, 0.1)) * (0.08 + 0.22 * var(--layer-t, 0) * var(--layer-t, 0))));
+  }
+
+  /* 영역 표시 박스 (선택 중 + 선택 후 시각적 가이드) */
+  .region-box {
+    position: absolute;
+    border: 2px dashed #ff7a1a;
+    background: rgba(255, 122, 26, 0.10);
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 5;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.6);
+    display: none;
+  }
+  .region-box.show { display: block; }
+
+  .window.selecting { cursor: crosshair; }
+  .window.selecting .bouncing-image { pointer-events: none; }
+  .window.has-image:not(.selecting):not(.panning) { cursor: grab; }
+  .window.panning { cursor: grabbing; }
+
+
+  /* 빈 상태 안내 */
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #6b5840;
+    text-align: center;
+    padding: 16px;
+    background: rgba(255,255,255,0.55);
+    transition: background 0.2s;
+  }
+  .window.dragover .placeholder { background: rgba(255,255,255,0.85); }
+  .placeholder .icon { font-size: 3rem; margin-bottom: 8px; }
+  .placeholder p { font-size: 0.9rem; margin: 2px 0; }
+  .placeholder .hint { font-size: 0.78rem; color: #8b6f47; margin-top: 6px; }
+
+  /* ---------- 애니메이션 ---------- */
+  /* 통통 — 위아래만(영역 마스크와 어긋나지 않도록). 격렬 슬라이더는 진폭과 두번째 점프 강도를 키움 */
+  @keyframes hop {
+    0%, 100% { transform: translateY(0); }
+    20%      { transform: translateY(calc(var(--bounce-amount) * (-1   - var(--squash) * 2.5))); }   /* 1차 큰 점프 */
+    40%      { transform: translateY(calc(var(--bounce-amount) * -0.25)); }                          /* 내려옴 */
+    60%      { transform: translateY(calc(var(--bounce-amount) * (-0.55 - var(--squash) * 2))); }    /* 2차 점프 — 격렬일수록 1차에 가깝게 */
+    80%      { transform: translateY(calc(var(--bounce-amount) * -0.1)); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(calc(var(--bounce-amount) * -1)); }
+  }
+  /* 덜덜 — 좌·우 ±0.5도 흔들림 + 한 사이클당 한 번 위로 솟는 부드러운 합성 */
+  @keyframes jitter {
+    0%, 100% { transform: translateY(0)                                rotate(0deg); }
+    25%      { transform: translateY(calc(var(--bounce-amount) * -0.5)) rotate(-0.5deg); }
+    50%      { transform: translateY(calc(var(--bounce-amount) * -1))   rotate(0deg); }
+    75%      { transform: translateY(calc(var(--bounce-amount) * -0.5)) rotate(0.5deg); }
+  }
+  /* 두근 — 한 번의 쿵 (한 사이클당 한 번 확대했다가 원위치). --heartbeat 0이면 무효 */
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(calc(1 + var(--heartbeat, 0))); }
+  }
+  .heartbeat-wrap {
+    position: absolute;
+    inset: 0;
+    transform-origin: center center;
+    animation: pulse var(--heartbeat-duration) ease-in-out infinite;
+    will-change: transform;
+  }
+  /* 확대 영역 펄스 — zoom-region-wrap 안의 overlay-zoom-layer만 추가 쿵 (전역 두근에 합성됨) */
+  @keyframes zoom-pulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(calc(1 + var(--zoom-mag, 0))); }
+  }
+  .zoom-region-wrap {
+    position: absolute;
+    inset: 0;
+    transform-origin: center center;
+    animation: zoom-pulse var(--heartbeat-duration) ease-in-out infinite;
+    pointer-events: none;
+    will-change: transform;
+  }
+  /* base와 overlay 모두 같은 모드 애니메이션 사용 → 영역이 원본 사진을 정확히 따라감 */
+  .mode-hop    .bouncing-image { animation-name: hop; }
+  .mode-float  .bouncing-image { animation-name: float;  animation-timing-function: ease-in-out; }
+  .mode-jitter .bouncing-image { animation-name: jitter; animation-timing-function: ease-in-out; }
+
+  /* ---------- 컨트롤 ---------- */
+  .controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    max-width: 520px;
+  }
+
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 999px;
+    background: #8b6f47;
+    color: white;
+    font-size: 0.88rem;
+    cursor: pointer;
+    transition: transform 0.15s, background 0.15s;
+    font-family: inherit;
+  }
+  button:hover  { background: #6b5235; transform: translateY(-1px); }
+  button.secondary { background: #c8b394; color: #4a3520; }
+  button.secondary:hover { background: #b39e7f; }
+  button.mode { background: #e8dcc4; color: #4a3520; }
+  button.mode.active { background: #5d4a2d; color: #fff; }
+
+  .slider {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.7);
+    padding: 6px 12px;
+    border-radius: 999px;
+    color: #4a3520;
+    font-size: 0.82rem;
+  }
+  .slider input[type="range"] { width: 80px; accent-color: #8b6f47; }
+  .slider input[type="number"] {
+    width: 54px;
+    padding: 2px 6px;
+    border: 1px solid rgba(0,0,0,0.12);
+    background: rgba(255,255,255,0.5);
+    border-radius: 4px;
+    font-size: 0.78rem;
+    color: #4a3520;
+    font-family: inherit;
+  }
+
+  #fileInput { display: none; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>들썩들썩</h1>
+    <p class="subtitle">액자는 가만히, 사진은 살아 움직여요</p>
+  </div>
+
+  <div class="frame">
+    <div class="window mode-hop" id="window">
+      <div class="zoom-wrap" id="zoomWrap">
+        <div class="heartbeat-wrap" id="heartbeatWrap">
+          <img class="bouncing-image" id="userImage" alt="">
+          <!-- 흔들/잔잔 동심 레이어들은 페이지 로드 시 JS에서 heartbeatWrap에 동적으로 생성 -->
+        </div>
+      </div>
+      <div class="region-box" id="regionBox"></div>
+      <div class="placeholder" id="placeholder">
+        <div class="icon">🌳</div>
+        <p><strong>사진을 끌어다 놓거나 클릭</strong></p>
+        <p class="hint">붙여넣기(Ctrl+V)도 됩니다</p>
+      </div>
+    </div>
+    <div class="caption">— 들썩들썩 —</div>
+  </div>
+
+  <div class="controls">
+    <button class="mode active" data-mode="hop">통통</button>
+    <button class="mode" data-mode="float">살랑</button>
+    <button class="mode" data-mode="jitter">덜덜</button>
+    <button id="playBtn" class="secondary">⏸ 정지</button>
+    <button id="frameSmaller" class="secondary">🔍−</button>
+    <button id="frameBigger"  class="secondary">🔍＋</button>
+    <button id="changeBtn" class="secondary">다른 사진</button>
+  </div>
+
+  <div class="controls">
+    <div class="slider">
+      <span>속도</span>
+      <input type="range" id="speed" min="0.25" max="1.6" step="0.05" value="0.7">
+    </div>
+    <div class="slider">
+      <span>변칙</span>
+      <input type="range" id="irreg" min="0" max="1" step="0.05" value="0">
+    </div>
+    <div class="slider">
+      <span>두근</span>
+      <input type="range" id="heartbeat" min="0" max="0.1" step="0.005" value="0">
+    </div>
+    <div class="slider">
+      <span>두근속도</span>
+      <input type="range" id="heartbeatDur" min="0.3" max="2.0" step="0.05" value="0.7">
+    </div>
+    <div class="slider">
+      <span>높이</span>
+      <input type="range" id="amount" min="2" max="14" step="0.5" value="8">
+    </div>
+    <div class="slider">
+      <span>격렬</span>
+      <input type="range" id="squash" min="0" max="0.25" step="0.01" value="0.06">
+    </div>
+    <div class="slider">
+      <span>크기</span>
+      <input type="range" id="zoom" min="0.5" max="3" step="0.05" value="1">
+      <button id="zoomReset" class="secondary" style="padding:2px 8px;font-size:0.75rem;">1×</button>
+    </div>
+    <div class="slider">
+      <span>↔</span>
+      <input type="range" id="panX" min="-150" max="150" step="1" value="0">
+    </div>
+    <div class="slider">
+      <span>↕</span>
+      <input type="range" id="panY" min="-150" max="150" step="1" value="0">
+      <button id="panReset" class="secondary" style="padding:2px 8px;font-size:0.75rem;">0</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="selectBtn"      class="secondary">✏️ 흔들 영역</button>
+    <button id="selectShake2Btn" class="secondary">✏️ 흔들 영역 2</button>
+    <button id="selectCalmBtn"  class="secondary">✏️ 덜 흔들리는 영역</button>
+    <button id="selectZoomBtn"  class="secondary">✏️ 확대 영역</button>
+    <button id="clearRegionBtn" class="secondary" hidden>✕ 흔들 지우기</button>
+    <button id="clearShake2Btn" class="secondary" hidden>✕ 흔들2 지우기</button>
+    <button id="clearCalmBtn"   class="secondary" hidden>✕ 잔잔 지우기</button>
+    <button id="clearZoomBtn"   class="secondary" hidden>✕ 확대 지우기</button>
+    <div class="slider">
+      <span>흔들</span>
+      <input type="range" id="factor" min="0" max="4" step="0.1" value="0.6">
+    </div>
+    <div class="slider">
+      <span>잔잔</span>
+      <input type="range" id="calm" min="0" max="1" step="0.05" value="0.1">
+    </div>
+    <div class="slider">
+      <span>부드럽기</span>
+      <input type="range" id="feather" min="0" max="40" step="1" value="18">
+    </div>
+    <div class="slider">
+      <span>확대</span>
+      <input type="range" id="zoomMag" min="0" max="0.15" step="0.005" value="0">
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="image/*">
+
+<script>
+  const fileInput       = document.getElementById('fileInput');
+  const windowEl        = document.getElementById('window');
+  const userImage       = document.getElementById('userImage');
+  // 흔들/잔잔 영역 — 각각 N단계 동심 레이어 (배열 순서: 바깥 → 안)
+  const NUM_LAYERS = 20;
+  const MAX_INSET  = 0.40;
+  const NESTED_INSETS = Array.from({length: NUM_LAYERS}, (_, i) =>
+    (i / (NUM_LAYERS - 1)) * MAX_INSET);
+
+  function buildLayers(className) {
+    const wrap = document.getElementById('heartbeatWrap');
+    const arr = [];
+    for (let i = 0; i < NUM_LAYERS; i++) {
+      const img = document.createElement('img');
+      img.className = 'bouncing-image ' + className;
+      img.style.setProperty('--layer-t', i / (NUM_LAYERS - 1));
+      img.alt = '';
+      wrap.appendChild(img);
+      arr.push(img);
+    }
+    return arr;
+  }
+  // 흔들 → 흔들2 → 잔잔 순으로 쌓아서 영역이 겹쳤을 때 위쪽이 표시됨
+  const overlayImages     = buildLayers('overlay-layer');
+  const overlayImages2    = buildLayers('overlay-layer-2');  // 다른 클래스 = 독립 duration
+  const overlayCalmImages = buildLayers('overlay-calm-layer');
+
+  // 확대 영역 — 단일 레이어를 자체 wrap 안에 (wrap이 zoom-pulse 애니메이션 보유)
+  const zoomRegionWrap = document.createElement('div');
+  zoomRegionWrap.className = 'zoom-region-wrap';
+  zoomRegionWrap.id = 'zoomRegionWrap';
+  const overlayZoomImage = document.createElement('img');
+  overlayZoomImage.className = 'bouncing-image overlay-zoom-layer';
+  overlayZoomImage.alt = '';
+  zoomRegionWrap.appendChild(overlayZoomImage);
+  document.getElementById('heartbeatWrap').appendChild(zoomRegionWrap);
+  const regionBox         = document.getElementById('regionBox');
+  const changeBtn         = document.getElementById('changeBtn');
+  const playBtn           = document.getElementById('playBtn');
+  const selectBtn         = document.getElementById('selectBtn');
+  const selectShake2Btn   = document.getElementById('selectShake2Btn');
+  const selectCalmBtn     = document.getElementById('selectCalmBtn');
+  const clearRegionBtn    = document.getElementById('clearRegionBtn');
+  const clearShake2Btn    = document.getElementById('clearShake2Btn');
+  const clearCalmBtn      = document.getElementById('clearCalmBtn');
+  const speed           = document.getElementById('speed');
+  const amount          = document.getElementById('amount');
+  const squashCtl       = document.getElementById('squash');
+  const zoomCtl         = document.getElementById('zoom');
+  const zoomReset       = document.getElementById('zoomReset');
+  const factor          = document.getElementById('factor');
+  const featherCtl      = document.getElementById('feather');
+  const calmCtl         = document.getElementById('calm');
+  const irregCtl        = document.getElementById('irreg');
+  const heartbeatCtl    = document.getElementById('heartbeat');
+  const heartbeatDurCtl = document.getElementById('heartbeatDur');
+  const zoomMagCtl      = document.getElementById('zoomMag');
+  const selectZoomBtn   = document.getElementById('selectZoomBtn');
+  const clearZoomBtn    = document.getElementById('clearZoomBtn');
+  const panXCtl         = document.getElementById('panX');
+  const panYCtl         = document.getElementById('panY');
+  const panReset        = document.getElementById('panReset');
+  const modeBtns        = document.querySelectorAll('.mode');
+
+  let region     = null;      // 흔들 영역 (wrap-local pixels — wrap의 transform 적용 전 좌표계)
+  let regionShake2 = null;    // 흔들 영역 2
+  let regionCalm = null;      // 잔잔 영역 (wrap-local)
+  let regionZoom = null;      // 확대 영역 (wrap-local)
+  let selectionType = null;   // 'shake' | 'shake2' | 'calm' | 'zoom' | null — 현재 선택 모드
+  let isSelecting = false;
+  let dragStart = null;
+  let suppressNextClick = false;
+  let panDrag = null;         // {startX, startY, initPanX, initPanY} — 드래그로 사진 이동 중일 때
+
+  function setSelectionMode(type) {
+    selectionType = type;
+    isSelecting = !!type;
+    windowEl.classList.toggle('selecting', isSelecting);
+    selectBtn.classList.toggle('active',       type === 'shake');
+    selectShake2Btn.classList.toggle('active', type === 'shake2');
+    selectCalmBtn.classList.toggle('active',   type === 'calm');
+    selectZoomBtn.classList.toggle('active',   type === 'zoom');
+    selectBtn.textContent = (type === 'shake')
+      ? '드래그로 흔들 영역을 그리세요'
+      : (region ? '✏️ 흔들 영역 다시' : '✏️ 흔들 영역');
+    selectShake2Btn.textContent = (type === 'shake2')
+      ? '드래그로 흔들2 영역을 그리세요'
+      : (regionShake2 ? '✏️ 흔들2 영역 다시' : '✏️ 흔들 영역 2');
+    selectCalmBtn.textContent = (type === 'calm')
+      ? '드래그로 잔잔 영역을 그리세요'
+      : (regionCalm ? '✏️ 잔잔 영역 다시' : '✏️ 덜 흔들리는 영역');
+    selectZoomBtn.textContent = (type === 'zoom')
+      ? '드래그로 확대 영역을 그리세요'
+      : (regionZoom ? '✏️ 확대 영역 다시' : '✏️ 확대 영역');
+  }
+
+  // ---------- 모드 전환 (버튼 클릭과 동일) ----------
+  function setMode(mode) {
+    modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    windowEl.classList.remove('mode-hop','mode-float','mode-jitter');
+    windowEl.classList.add('mode-' + mode);
+    syncAnimations();
+  }
+
+  function syncAnimations() {
+    [userImage, ...overlayImages, ...overlayImages2, ...overlayCalmImages, overlayZoomImage].forEach(el => {
+      el.style.animation = 'none';
+      void el.offsetWidth;
+      el.style.animation = '';
+    });
+  }
+
+  function updateOverlayAmount() {
+    document.documentElement.style.setProperty('--factor', factor.value);
+  }
+
+  function getZoom() {
+    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zoom'));
+    return Number.isFinite(v) && v > 0 ? v : 1;
+  }
+  function getPanX() {
+    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pan-x'));
+    return Number.isFinite(v) ? v : 0;
+  }
+  function getPanY() {
+    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pan-y'));
+    return Number.isFinite(v) ? v : 0;
+  }
+
+  // 윈도우(스크린) 좌표 → wrap의 로컬 좌표로 역변환 (드래그 시점에만 적용)
+  function windowToWrap(wx, wy) {
+    const W = windowEl.clientWidth, H = windowEl.clientHeight;
+    const cx = W / 2, cy = H / 2;
+    const z  = getZoom();
+    const px = getPanX();
+    const py = getPanY();
+    return {
+      x: cx + (wx - px - cx) / z,
+      y: cy + (wy - py - cy) / z,
+    };
+  }
+
+  function applyMask(img, r) {
+    if (!r || !userImage.classList.contains('active')) {
+      img.classList.remove('active');
+      return;
+    }
+    // r은 이미 wrap-local 좌표 — overlay가 wrap의 자식이라 wrap의 transform 따라 자동 이동/스케일됨
+    img.src = userImage.src;
+    img.classList.add('active');
+    img.style.maskPosition        = `${r.x}px ${r.y}px`;
+    img.style.webkitMaskPosition  = `${r.x}px ${r.y}px`;
+    img.style.maskSize            = `${r.w}px ${r.h}px`;
+    img.style.webkitMaskSize      = `${r.w}px ${r.h}px`;
+  }
+
+  function nestedRect(r, inset) {
+    return {
+      x: r.x + r.w * inset,
+      y: r.y + r.h * inset,
+      w: r.w * (1 - inset * 2),
+      h: r.h * (1 - inset * 2),
+    };
+  }
+
+  function applyNestedMasks(r, imgs) {
+    if (r) {
+      NESTED_INSETS.forEach((inset, i) => applyMask(imgs[i], nestedRect(r, inset)));
+    } else {
+      imgs.forEach(img => applyMask(img, null));
+    }
+  }
+
+  function applyRegions() {
+    // 흔들·흔들2·잔잔 영역 — 동심 N단계로 분할 적용
+    applyNestedMasks(region,       overlayImages);
+    applyNestedMasks(regionShake2, overlayImages2);
+    applyNestedMasks(regionCalm,   overlayCalmImages);
+    // 확대 영역 — 단일 레이어
+    applyMask(overlayZoomImage, regionZoom);
+    regionBox.classList.remove('show');
+    const hasImg = userImage.classList.contains('active');
+    clearRegionBtn.hidden = !region       || !hasImg;
+    clearShake2Btn.hidden = !regionShake2 || !hasImg;
+    clearCalmBtn.hidden   = !regionCalm   || !hasImg;
+    clearZoomBtn.hidden   = !regionZoom   || !hasImg;
+    if (selectionType === null) {
+      selectBtn.textContent       = region       ? '✏️ 흔들 영역 다시'  : '✏️ 흔들 영역';
+      selectShake2Btn.textContent = regionShake2 ? '✏️ 흔들2 영역 다시' : '✏️ 흔들 영역 2';
+      selectCalmBtn.textContent   = regionCalm   ? '✏️ 잔잔 영역 다시'  : '✏️ 덜 흔들리는 영역';
+      selectZoomBtn.textContent   = regionZoom   ? '✏️ 확대 영역 다시'  : '✏️ 확대 영역';
+    }
+    updateOverlayAmount();
+    syncAnimations();
+  }
+
+  async function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = (e) => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    await new Promise((resolve) => {
+      userImage.addEventListener('load', resolve, { once: true });
+      userImage.src = dataUrl;
+    });
+    userImage.classList.add('active');
+    windowEl.classList.add('has-image');
+    applyRegions();
+  }
+
+  windowEl.addEventListener('click', () => {
+    if (suppressNextClick) { suppressNextClick = false; return; }
+    if (isSelecting) return;
+    if (userImage.classList.contains('active')) return;
+    fileInput.value = '';
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+  ['dragenter','dragover'].forEach(evt => {
+    windowEl.addEventListener(evt, (e) => { e.preventDefault(); windowEl.classList.add('dragover'); });
+  });
+  ['dragleave','drop'].forEach(evt => {
+    windowEl.addEventListener(evt, (e) => { e.preventDefault(); windowEl.classList.remove('dragover'); });
+  });
+  windowEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    loadFile(e.dataTransfer.files[0]);
+  });
+
+  changeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    fileInput.value = '';
+    fileInput.click();
+  });
+
+  playBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const paused = windowEl.classList.toggle('paused');
+    playBtn.textContent = paused ? '▶ 시작' : '⏸ 정지';
+  });
+
+  // 액자 크기 — +/- 버튼으로 한 변을 step씩 조절
+  const FRAME_MIN = 240, FRAME_MAX = 1200, FRAME_STEP = 60;
+  let frameSize = 380;
+  function applyFrameSize() {
+    document.documentElement.style.setProperty('--frame-size', frameSize + 'px');
+  }
+  document.getElementById('frameSmaller').addEventListener('click', (e) => {
+    e.stopPropagation();
+    frameSize = Math.max(FRAME_MIN, frameSize - FRAME_STEP);
+    applyFrameSize();
+  });
+  document.getElementById('frameBigger').addEventListener('click', (e) => {
+    e.stopPropagation();
+    frameSize = Math.min(FRAME_MAX, frameSize + FRAME_STEP);
+    applyFrameSize();
+  });
+
+  speed.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--bounce-duration', speed.value + 's');
+  });
+
+  // 변칙 — 사이클 경계(iteration)에서만 매우 작은 step으로 duration 조정 → snap 최소화.
+  // 한 사이클당 최대 0.5%씩만 이동하고, 슬라이더 max에서 ±4% 범위 안에서만 랜덤 워크.
+  let irregFactor = 1;
+  let irregLastApply = 0;
+  irregCtl.addEventListener('input', () => {
+    if (parseFloat(irregCtl.value) === 0) {
+      irregFactor = 1;
+      document.documentElement.style.setProperty('--bounce-duration', speed.value + 's');
+    }
+  });
+  userImage.addEventListener('animationiteration', () => {
+    const amount = parseFloat(irregCtl.value);
+    if (amount <= 0) return;
+    const now = performance.now();
+    const base = parseFloat(speed.value);
+    // 한 사이클(base × 0.95) 이내에 두 번 이상 호출되면(cascade) 무시 — 듀레이션 축소가 wrap을 일으키는 케이스 방지
+    if (now - irregLastApply < base * 950) return;
+    irregLastApply = now;
+    const range = amount * 0.04;
+    const step  = (Math.random() * 2 - 1) * 0.005;          // 사이클당 ±0.5% 만 이동 (매우 부드러운 drift)
+    const bias  = (1 - irregFactor) * 0.3;                  // 평균 1로 살짝 더 빠르게 회귀
+    irregFactor = Math.max(1 - range, Math.min(1 + range, irregFactor + step + bias));
+    document.documentElement.style.setProperty('--bounce-duration', (base * irregFactor).toFixed(3) + 's');
+  });
+  amount.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--base-amount', amount.value + '%');
+  });
+  squashCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--squash', squashCtl.value);
+  });
+  // zoom/pan은 wrap의 transform만 갱신 — 영역은 wrap의 자식이라 자동으로 따라감
+  zoomCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--zoom', zoomCtl.value);
+  });
+  zoomReset.addEventListener('click', (e) => {
+    e.stopPropagation();
+    zoomCtl.value = 1;
+    document.documentElement.style.setProperty('--zoom', '1');
+  });
+  panXCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--pan-x', panXCtl.value + 'px');
+  });
+  panYCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--pan-y', panYCtl.value + 'px');
+  });
+  panReset.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panXCtl.value = 0;
+    panYCtl.value = 0;
+    document.documentElement.style.setProperty('--pan-x', '0px');
+    document.documentElement.style.setProperty('--pan-y', '0px');
+  });
+
+  // 마우스 휠로도 확대/축소 — 영역 선택 중에는 비활성
+  windowEl.addEventListener('wheel', (e) => {
+    if (isSelecting || !userImage.classList.contains('active')) return;
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 0.05 : -0.05;
+    const next = Math.max(0.5, Math.min(3, parseFloat(zoomCtl.value) + step));
+    zoomCtl.value = next.toFixed(2);
+    document.documentElement.style.setProperty('--zoom', zoomCtl.value);
+  }, { passive: false });
+
+  factor.addEventListener('input', updateOverlayAmount);
+  calmCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--calm', calmCtl.value);
+  });
+  featherCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--feather', featherCtl.value + '%');
+  });
+  heartbeatCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--heartbeat', heartbeatCtl.value);
+  });
+  heartbeatDurCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--heartbeat-duration', heartbeatDurCtl.value + 's');
+  });
+  zoomMagCtl.addEventListener('input', () => {
+    document.documentElement.style.setProperty('--zoom-mag', zoomMagCtl.value);
+  });
+
+  // ---------- 영역 선택 (드래그) ----------
+  function shake(el) {
+    el.animate(
+      [{transform:'translateX(0)'},{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'translateX(0)'}],
+      {duration: 250}
+    );
+  }
+
+  selectBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!userImage.classList.contains('active')) { shake(selectBtn); return; }
+    setSelectionMode(selectionType === 'shake' ? null : 'shake');
+  });
+
+  selectShake2Btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!userImage.classList.contains('active')) { shake(selectShake2Btn); return; }
+    setSelectionMode(selectionType === 'shake2' ? null : 'shake2');
+  });
+  selectCalmBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!userImage.classList.contains('active')) { shake(selectCalmBtn); return; }
+    setSelectionMode(selectionType === 'calm' ? null : 'calm');
+  });
+  selectZoomBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!userImage.classList.contains('active')) { shake(selectZoomBtn); return; }
+    setSelectionMode(selectionType === 'zoom' ? null : 'zoom');
+  });
+
+  clearRegionBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    region = null;
+    applyRegions();
+  });
+  clearShake2Btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    regionShake2 = null;
+    applyRegions();
+  });
+  clearCalmBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    regionCalm = null;
+    applyRegions();
+  });
+  clearZoomBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    regionZoom = null;
+    applyRegions();
+  });
+
+  function currentRegionRef(value) {
+    if (value !== undefined) {
+      if      (selectionType === 'shake')  region       = value;
+      else if (selectionType === 'shake2') regionShake2 = value;
+      else if (selectionType === 'calm')   regionCalm   = value;
+      else if (selectionType === 'zoom')   regionZoom   = value;
+    }
+    if (selectionType === 'shake')  return region;
+    if (selectionType === 'shake2') return regionShake2;
+    if (selectionType === 'calm')   return regionCalm;
+    if (selectionType === 'zoom')   return regionZoom;
+    return null;
+  }
+
+  windowEl.addEventListener('pointerdown', (e) => {
+    // 영역 선택 모드 — 영역 드래그
+    if (isSelecting) {
+      e.preventDefault();
+      windowEl.setPointerCapture(e.pointerId);
+      const rect = windowEl.getBoundingClientRect();
+      const wx = e.clientX - rect.left;
+      const wy = e.clientY - rect.top;
+      const local = windowToWrap(wx, wy);
+      dragStart = { wx, wy, local };
+      currentRegionRef({ x: local.x, y: local.y, w: 0, h: 0 });
+      regionBox.classList.add('show');
+      return;
+    }
+    // 사진 로드된 상태에서 드래그 — pan
+    if (userImage.classList.contains('active')) {
+      e.preventDefault();
+      windowEl.setPointerCapture(e.pointerId);
+      panDrag = {
+        startX:   e.clientX,
+        startY:   e.clientY,
+        initPanX: getPanX(),
+        initPanY: getPanY(),
+      };
+      windowEl.classList.add('panning');
+    }
+  });
+
+  windowEl.addEventListener('pointermove', (e) => {
+    // 영역 드래그 중
+    if (isSelecting && dragStart) {
+      const rect = windowEl.getBoundingClientRect();
+      const wx = Math.max(0, Math.min(rect.width,  e.clientX - rect.left));
+      const wy = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+      const local = windowToWrap(wx, wy);
+      currentRegionRef({
+        x: Math.min(dragStart.local.x, local.x),
+        y: Math.min(dragStart.local.y, local.y),
+        w: Math.abs(local.x - dragStart.local.x),
+        h: Math.abs(local.y - dragStart.local.y),
+      });
+      const bx = Math.min(dragStart.wx, wx);
+      const by = Math.min(dragStart.wy, wy);
+      regionBox.style.left   = bx + 'px';
+      regionBox.style.top    = by + 'px';
+      regionBox.style.width  = Math.abs(wx - dragStart.wx) + 'px';
+      regionBox.style.height = Math.abs(wy - dragStart.wy) + 'px';
+      return;
+    }
+    // pan 드래그 중
+    if (panDrag) {
+      const rawX = panDrag.initPanX + (e.clientX - panDrag.startX);
+      const rawY = panDrag.initPanY + (e.clientY - panDrag.startY);
+      const px = Math.max(-150, Math.min(150, rawX));
+      const py = Math.max(-150, Math.min(150, rawY));
+      document.documentElement.style.setProperty('--pan-x', px + 'px');
+      document.documentElement.style.setProperty('--pan-y', py + 'px');
+      panXCtl.value = px;
+      panYCtl.value = py;
+    }
+  });
+
+  windowEl.addEventListener('pointerup', () => {
+    // 영역 드래그 종료 — 영역 확정
+    if (isSelecting) {
+      const wasDragging = !!dragStart;
+      dragStart = null;
+      regionBox.classList.remove('show');
+      const r = currentRegionRef();
+      if (r && r.w > 8 && r.h > 8) {
+        setSelectionMode(null);
+        applyRegions();
+        if (wasDragging) suppressNextClick = true;
+      } else {
+        currentRegionRef(null);
+      }
+      return;
+    }
+    // pan 드래그 종료
+    if (panDrag) {
+      panDrag = null;
+      windowEl.classList.remove('panning');
+    }
+  });
+
+  modeBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setMode(btn.dataset.mode);
+    });
+  });
+
+  window.addEventListener('paste', (e) => {
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (item) loadFile(item.getAsFile());
+  });
+
+  // PWA — 오프라인 캐시 (file:// 에서는 등록 안 됨, 그래도 페이지는 정상 동작)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* 무시 */ });
+    });
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "들썩들썩",
+  "short_name": "들썩들썩",
+  "description": "사진을 들썩이게 만드는 앱",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fbe9d7",
+  "theme_color": "#8b6f47",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

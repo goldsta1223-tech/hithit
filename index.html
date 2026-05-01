@@ -182,6 +182,8 @@
   .window.selecting .bouncing-image { pointer-events: none; }
   .window.has-image:not(.selecting):not(.panning) { cursor: grab; }
   .window.panning { cursor: grabbing; }
+  /* 모바일에서 브라우저가 드래그를 스크롤/줌으로 가로채지 않게 */
+  .window.has-image { touch-action: none; }
 
 
   /* 빈 상태 안내 */
@@ -887,18 +889,32 @@
   });
 
   windowEl.addEventListener('pointerup', () => {
-    // 영역 드래그 종료 — 영역 확정
+    // 영역 드래그 종료 — 영역 확정 (탭이면 기본 크기 사각형으로 자동 배치)
     if (isSelecting) {
       const wasDragging = !!dragStart;
       dragStart = null;
       regionBox.classList.remove('show');
       const r = currentRegionRef();
       if (r && r.w > 8 && r.h > 8) {
+        // 충분히 큰 드래그 → 그대로 사용
         setSelectionMode(null);
         applyRegions();
         if (wasDragging) suppressNextClick = true;
-      } else {
-        currentRegionRef(null);
+      } else if (r) {
+        // 짧은 탭 → 탭 지점 중심으로 기본 크기(40% min) 사각형 자동 배치
+        const W = windowEl.clientWidth, H = windowEl.clientHeight;
+        const z = getZoom();
+        const size = Math.min(W, H) * 0.4 / z;
+        const cx = r.x, cy = r.y;
+        currentRegionRef({
+          x: Math.max(0, Math.min(W - size, cx - size / 2)),
+          y: Math.max(0, Math.min(H - size, cy - size / 2)),
+          w: size,
+          h: size,
+        });
+        setSelectionMode(null);
+        applyRegions();
+        suppressNextClick = true;
       }
       return;
     }

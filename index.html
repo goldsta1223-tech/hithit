@@ -2,10 +2,13 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#8b6f47">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
 <title>들썩들썩</title>
 <style>
   :root {
@@ -936,6 +939,21 @@
     const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
     if (item) loadFile(item.getAsFile());
   });
+
+  // 브라우저 페이지 줌 차단 (iOS Safari 핀치줌 / 더블탭줌)
+  ['gesturestart','gesturechange','gestureend'].forEach(evt => {
+    document.addEventListener(evt, (e) => e.preventDefault());
+  });
+  let __lastTouchEnd = 0;
+  document.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - __lastTouchEnd <= 300) e.preventDefault();
+    __lastTouchEnd = now;
+  }, { passive: false });
+  // 두 손가락 터치 무브 차단 (핀치)
+  document.addEventListener('touchmove', (e) => {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
 
   // PWA — 오프라인 캐시 (file:// 에서는 등록 안 됨, 그래도 페이지는 정상 동작)
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {

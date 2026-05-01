@@ -488,8 +488,12 @@
   let dragStart = null;
   let suppressNextClick = false;
   let panDrag = null;         // {startX, startY, initPanX, initPanY} — 드래그로 사진 이동 중일 때
+  let pendingCorner1 = null;  // 투포인트 모드 — {wx, wy, local} 첫 탭 위치 (두 번째 탭 대기 중)
 
   function setSelectionMode(type) {
+    // 모드 진입/종료 시 대기 중인 코너1 초기화 + 마커 숨김
+    pendingCorner1 = null;
+    if (!type) regionBox.classList.remove('show');
     selectionType = type;
     isSelecting = !!type;
     windowEl.classList.toggle('selecting', isSelecting);
@@ -829,18 +833,35 @@
     return null;
   }
 
+  function drawPreviewBox(startWx, startWy, wx, wy) {
+    const bx = Math.min(startWx, wx);
+    const by = Math.min(startWy, wy);
+    regionBox.style.left   = bx + 'px';
+    regionBox.style.top    = by + 'px';
+    regionBox.style.width  = Math.abs(wx - startWx) + 'px';
+    regionBox.style.height = Math.abs(wy - startWy) + 'px';
+    regionBox.classList.add('show');
+  }
+  function drawCornerMarker(wx, wy) {
+    regionBox.style.left   = (wx - 8) + 'px';
+    regionBox.style.top    = (wy - 8) + 'px';
+    regionBox.style.width  = '16px';
+    regionBox.style.height = '16px';
+    regionBox.classList.add('show');
+  }
+
   windowEl.addEventListener('pointerdown', (e) => {
-    // 영역 선택 모드 — 영역 드래그
+    // 영역 선택 모드 — 드래그 또는 두 번 탭
     if (isSelecting) {
       e.preventDefault();
-      windowEl.setPointerCapture(e.pointerId);
+      try { windowEl.setPointerCapture(e.pointerId); } catch (_) { /* synthetic event 등에서 throw 가능 — 무시 */ }
       const rect = windowEl.getBoundingClientRect();
       const wx = e.clientX - rect.left;
       const wy = e.clientY - rect.top;
       const local = windowToWrap(wx, wy);
-      dragStart = { wx, wy, local };
-      currentRegionRef({ x: local.x, y: local.y, w: 0, h: 0 });
-      regionBox.classList.add('show');
+      // pendingCorner1이 있으면 그 자리를 시작점으로 — 어디서 두 번째 탭/드래그를 하든 corner1과 현재 포인터로 사각형
+      dragStart = pendingCorner1 ? { ...pendingCorner1 } : { wx, wy, local };
+      drawPreviewBox(dragStart.wx, dragStart.wy, wx, wy);
       return;
     }
     // 사진 로드된 상태에서 드래그 — pan
@@ -858,24 +879,12 @@
   });
 
   windowEl.addEventListener('pointermove', (e) => {
-    // 영역 드래그 중
+    // 영역 드래그/투포인트 중 — 미리보기만 갱신, 확정은 pointerup에서
     if (isSelecting && dragStart) {
       const rect = windowEl.getBoundingClientRect();
       const wx = Math.max(0, Math.min(rect.width,  e.clientX - rect.left));
       const wy = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
-      const local = windowToWrap(wx, wy);
-      currentRegionRef({
-        x: Math.min(dragStart.local.x, local.x),
-        y: Math.min(dragStart.local.y, local.y),
-        w: Math.abs(local.x - dragStart.local.x),
-        h: Math.abs(local.y - dragStart.local.y),
-      });
-      const bx = Math.min(dragStart.wx, wx);
-      const by = Math.min(dragStart.wy, wy);
-      regionBox.style.left   = bx + 'px';
-      regionBox.style.top    = by + 'px';
-      regionBox.style.width  = Math.abs(wx - dragStart.wx) + 'px';
-      regionBox.style.height = Math.abs(wy - dragStart.wy) + 'px';
+      drawPreviewBox(dragStart.wx, dragStart.wy, wx, wy);
       return;
     }
     // pan 드래그 중
@@ -891,37 +900,40 @@
     }
   });
 
-  windowEl.addEventListener('pointerup', () => {
-    // 영역 드래그 종료 — 영역 확정 (탭이면 기본 크기 사각형으로 자동 배치)
+  windowEl.addEventListener('pointerup', (e) => {
     if (isSelecting) {
-      const wasDragging = !!dragStart;
+      const start = dragStart;
       dragStart = null;
-      regionBox.classList.remove('show');
-      const r = currentRegionRef();
-      if (r && r.w > 8 && r.h > 8) {
-        // 충분히 큰 드래그 → 그대로 사용
-        setSelectionMode(null);
-        applyRegions();
-        if (wasDragging) suppressNextClick = true;
-      } else if (r) {
-        // 짧은 탭 → 탭 지점 중심으로 기본 크기(40% min) 사각형 자동 배치
-        const W = windowEl.clientWidth, H = windowEl.clientHeight;
-        const z = getZoom();
-        const size = Math.min(W, H) * 0.4 / z;
-        const cx = r.x, cy = r.y;
-        currentRegionRef({
-          x: Math.max(0, Math.min(W - size, cx - size / 2)),
-          y: Math.max(0, Math.min(H - size, cy - size / 2)),
-          w: size,
-          h: size,
-        });
-        setSelectionMode(null);
-        applyRegions();
-        suppressNextClick = true;
+      const rect = windowEl.getBoundingClientRect();
+      const wx = e.clientX - rect.left;
+      const wy = e.clientY - rect.top;
+      const local = windowToWrap(wx, wy);
+
+      // start (= pendingCorner1 또는 첫 pointerdown 위치) ~ 현재 포인터 사각형
+      if (start) {
+        const r = {
+          x: Math.min(start.local.x, local.x),
+          y: Math.min(start.local.y, local.y),
+          w: Math.abs(local.x - start.local.x),
+          h: Math.abs(local.y - start.local.y),
+        };
+        if (r.w > 8 && r.h > 8) {
+          // 충분히 큰 사각형 → 영역 확정 (드래그 또는 두 번째 탭)
+          pendingCorner1 = null;
+          regionBox.classList.remove('show');
+          currentRegionRef(r);
+          setSelectionMode(null);
+          applyRegions();
+          suppressNextClick = true;
+        } else {
+          // 짧은 탭 → 첫 탭(corner1 저장)이거나 corner1 갱신
+          pendingCorner1 = { wx, wy, local };
+          drawCornerMarker(wx, wy);
+          suppressNextClick = true;
+        }
       }
       return;
     }
-    // pan 드래그 종료
     if (panDrag) {
       panDrag = null;
       windowEl.classList.remove('panning');
